@@ -1,0 +1,515 @@
+####File Processing
+####Adding new column SiteID-Band
+import pandas as pd
+
+def concatenate_and_save(file_path, sheet_name):
+    # Read the specific sheet from the Excel file
+    data = pd.read_excel(file_path, sheet_name=sheet_name)
+
+    # Concatenate 'Physical PlanSiteID' and 'Remarks' into a new column 'SiteID-Band'
+    data['SiteID-Band'] = data['Physical PlanSiteID'] + data['Remarks'].astype(str)
+
+    # Save the updated dataframe back to a new Excel file
+    output_file_path = file_path.replace('.xlsx', '_updated.xlsx')
+    data.to_excel(output_file_path, index=False)
+
+    print(f"File has been saved with the new 'SiteID-Band' column at {output_file_path}.")
+
+# File paths and sheet names
+previous_file_path = 'C:/#RF Files 2023/##Python Files/Projects/SSVProgress/#Raw/Previous.xlsx'
+current_file_path = 'C:/#RF Files 2023/##Python Files/Projects/SSVProgress/#Raw/Current.xlsx'
+sheet_name = 'MIN_4G EXP'
+
+# Apply the function to both files
+concatenate_and_save(previous_file_path, sheet_name)
+concatenate_and_save(current_file_path, sheet_name)
+
+
+####Import data from raw files
+####Compare prev & curr 4G expansion site
+import os
+import mysql.connector
+import pandas as pd
+from sqlalchemy import create_engine
+from mysql.connector import Error
+
+# Database configuration
+db_config = {
+    'host': '127.0.0.1',
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'auth_plugin': 'mysql_native_password',
+    'database': 'ssvprogress',
+}
+
+def create_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        if connection.is_connected():
+            print("Connected to MySQL.")
+            return connection
+    except Error as e:
+        print(f"Error: {e}")
+        return None
+
+def truncate_table(connection, table_name):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+            result = cursor.fetchone()
+            if result:
+                truncate_query = f"TRUNCATE TABLE {table_name};"
+                cursor.execute(truncate_query)
+                connection.commit()
+                print(f"Table {table_name} truncated.")
+            else:
+                print(f"Table {table_name} does not exist.")
+    except Error as e:
+        print(f"An error occurred during table truncation: {e}")
+
+def import_data(connection, file_path, table_name):
+    try:
+        df = pd.read_excel(file_path, sheet_name='Sheet1')
+
+        date_columns = [
+            'Light-Up Date', 'Test Date Check', 'Submit report date',
+            'Audit Date', 'Plan Rectification Date', 'RNO Audit Date Again'
+        ]
+
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+
+        print("Date conversion complete.")
+
+        engine = create_engine(
+            f'mysql+mysqlconnector://{db_config["user"]}:{db_config["password"]}@{db_config["host"]}/{db_config["database"]}')
+
+        df.to_sql(table_name, con=engine, if_exists='replace', index=False, method='multi')
+
+        print(f"Data from {file_path} imported into the {table_name} table.")
+    except Exception as e:
+        print(f"An error occurred during data import: {e}")
+        raise
+
+def close_connection(connection):
+    if connection.is_connected():
+        connection.close()
+        print("Connection closed.")
+
+def table_exists(cursor, table_name):
+    cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+    return cursor.fetchone() is not None
+
+def merge_duplicate_data(connection):
+    try:
+        with connection.cursor() as cursor:
+            if table_exists(cursor, 'current_4gexp') and table_exists(cursor, 'min_4gexp'):
+                cursor.execute('''
+                    INSERT INTO min_4gexp
+                    SELECT c.*
+                    FROM current_4gexp c
+                    LEFT JOIN min_4gexp p ON c.`SiteID-Band` = p.`SiteID-Band`
+                    WHERE p.`SiteID-Band` IS NULL
+                ''')
+                connection.commit()
+                print("Merge duplicate data completed.")
+            else:
+                print("One or both tables 'current_4gexp' or 'min_4gexp' do not exist.")
+    except Error as e:
+        print(f"An error occurred during data merge: {e}")
+
+
+if __name__ == "__main__":
+    connection = create_connection()
+    if connection:
+        try:
+            tables_to_truncate = ['current_4gexp', 'previous_4gexp', 'min_4gexp']
+            for table_name in tables_to_truncate:
+                truncate_table(connection, table_name)
+
+            excel_directory = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Raw\\'
+            files_to_import = [
+                ('Current_updated.xlsx', 'current_4gexp'),
+                ('Previous_updated.xlsx', 'previous_4gexp'),
+                ('Previous_updated.xlsx', 'min_4gexp')
+            ]
+            for file_name, table_name in files_to_import:
+                file_path = os.path.join(excel_directory, file_name)
+                import_data(connection, file_path, table_name)
+
+            merge_duplicate_data(connection)
+
+        except Error as e:
+            print(f"An error occurred: {e}")
+        finally:
+            close_connection(connection)
+
+
+#### Commercial Launch Cities Update
+
+import mysql.connector
+from mysql.connector import Error
+from sqlalchemy import create_engine
+import pandas as pd
+import warnings
+
+# Suppress pandas warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Replace these with your actual database credentials
+db_config = {
+    'host': '127.0.0.1',
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'auth_plugin': 'mysql_native_password',
+    'database': 'ssvprogress',
+}
+
+def create_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        if connection.is_connected():
+            print("Connected to MySQL.")
+            return connection
+    except Error as e:
+        print(f"Error: {e}")
+        return None
+
+def fetch_dataframe(connection, query):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            data = cursor.fetchall()
+            df = pd.DataFrame(data, columns=columns)
+            return df
+    except Error as e:
+        print(f"An error occurred while fetching data: {e}")
+        return pd.DataFrame()
+
+def update_commercial_launch(connection):
+    try:
+        min_4gexp_query = "SELECT * FROM min_4gexp;"
+        comm_cities_query = "SELECT * FROM comm_cities;"
+
+        min_4gexp_df = fetch_dataframe(connection, min_4gexp_query)
+        comm_cities_df = fetch_dataframe(connection, comm_cities_query)
+
+        if not min_4gexp_df.empty and not comm_cities_df.empty:
+            min_4gexp_df['Commercial Launch'] = min_4gexp_df['City Code'].isin(comm_cities_df['Mun_code']).map({True: 'YES', False: 'NO'})
+
+            with connection.cursor() as cursor:
+                for index, row in min_4gexp_df.iterrows():
+                    city_code = row['City Code']
+                    commercial_launch = row['Commercial Launch']
+                    cursor.execute(f"UPDATE min_4gexp SET `Commercial Launch` = '{commercial_launch}' WHERE `City Code` = '{city_code}';")
+
+            connection.commit()
+            print("Lookup and update completed.")
+        else:
+            print("Dataframes are empty. Lookup and update skipped.")
+
+    except Error as e:
+        print(f"An error occurred during lookup and update: {e}")
+
+def close_connection(connection):
+    if connection.is_connected():
+        connection.close()
+        print("Connection closed.")
+
+# Create a connection
+connection = create_connection()
+
+# Perform lookup and update
+if connection:
+    update_commercial_launch(connection)
+
+    # Close the connection
+    close_connection(connection)
+
+####Update: LightUp > Integrated
+import pandas as pd
+from sqlalchemy import create_engine
+
+# Replace these with your actual database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Load min_4gexp and current_4gexp tables into DataFrames
+min_4gexp = pd.read_sql("SELECT * FROM min_4gexp", con=engine)
+current_4gexp = pd.read_sql("SELECT * FROM current_4gexp", con=engine)
+
+### Convert 'Light-Up Date' in both DataFrames to datetime
+min_4gexp['Light-Up Date'] = pd.to_datetime(min_4gexp['Light-Up Date'], errors='coerce')
+current_4gexp['Light-Up Date'] = pd.to_datetime(current_4gexp['Light-Up Date'], errors='coerce')
+
+# Merge DataFrames based on 'SiteID-Band'
+merged_df = pd.merge(min_4gexp, current_4gexp[['SiteID-Band', 'Light-Up Date', 'Construction progress']],
+                     on='SiteID-Band', how='left', suffixes=('', '_current'))
+
+# Update 'Light-Up Date' if it is null in min_4gexp
+light_up_date_null_mask = pd.isnull(min_4gexp['Light-Up Date'])
+min_4gexp.loc[light_up_date_null_mask, 'Light-Up Date'] = merged_df.loc[light_up_date_null_mask, 'Light-Up Date_current']
+
+# Update 'Construction progress' based on 'Light-Up Date'
+# If 'Light-Up Date' is not null, set to 'Integrated', else set to 'For CW mobilization'
+min_4gexp['Construction progress'] = min_4gexp['Light-Up Date'].apply(lambda x: 'Integrated' if pd.notnull(x) else 'For CW mobilization')
+
+# Before update, count the rows
+rows_before_update = len(min_4gexp)
+
+# Update the MySQL table with the modified min_4gexp DataFrame using SQLAlchemy
+min_4gexp.to_sql(name='min_4gexp', con=engine, if_exists='replace', index=False)
+
+# Dispose the engine
+engine.dispose()
+
+# Display number of rows affected (in this case, rows updated)
+print(f"Number of rows in 'min_4gexp' table after update: {rows_before_update}")
+
+### Update: SSV Progress, based from Test Date Check and Submit Report Date
+
+import pandas as pd
+from sqlalchemy import create_engine
+
+# Replace these with your actual database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Load min_4gexp table into DataFrame
+min_4gexp = pd.read_sql("SELECT * FROM min_4gexp", con=engine)
+
+# Load current_4gexp table into DataFrame
+current_4gexp = pd.read_sql("SELECT * FROM current_4gexp", con=engine)
+
+# Merge DataFrames based on 'SiteID-Band'
+merged_df = pd.merge(min_4gexp, current_4gexp[['SiteID-Band', 'Test Date Check', 'Submit report date']],
+                     on='SiteID-Band', how='left', suffixes=('', '_current_4gexp'))
+
+# Update 'Test Date Check' in min_4gexp if it is null
+test_date_null_mask = pd.isnull(min_4gexp['Test Date Check'])
+min_4gexp.loc[test_date_null_mask, 'Test Date Check'] = merged_df.loc[test_date_null_mask, 'Test Date Check_current_4gexp']
+
+# Update 'Submit report date' in min_4gexp if it is null
+submit_report_date_null_mask = pd.isnull(min_4gexp['Submit report date'])
+min_4gexp.loc[submit_report_date_null_mask, 'Submit report date'] = merged_df.loc[submit_report_date_null_mask, 'Submit report date_current_4gexp']
+
+# Update 'SSV progress' based on 'Construction progress', 'Test Date Check', and 'Submit report date'
+is_integrated = min_4gexp['Construction progress'] == 'Integrated'
+test_date_not_null = pd.notnull(min_4gexp['Test Date Check'])
+submit_report_date_not_null = pd.notnull(min_4gexp['Submit report date'])
+
+min_4gexp.loc[is_integrated & test_date_not_null & submit_report_date_not_null, 'SSV progress'] = 'Report submitted'
+min_4gexp.loc[is_integrated & test_date_not_null & ~submit_report_date_not_null, 'SSV progress'] = 'Test finished'
+min_4gexp.loc[is_integrated & ~test_date_not_null & ~submit_report_date_not_null, 'SSV progress'] = 'Ready for test'
+
+# Update the MySQL table with the modified min_4gexp DataFrame using SQLAlchemy
+min_4gexp.to_sql(name='min_4gexp', con=engine, if_exists='replace', index=False)
+
+# Dispose the engine
+engine.dispose()
+
+print("min_4gexp table has been updated.")
+
+###Update: From Auditor to Remarks
+
+import pandas as pd
+from sqlalchemy import create_engine
+from datetime import timedelta
+
+# Database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Load tables into DataFrames
+min_4gexp = pd.read_sql("SELECT * FROM min_4gexp", con=engine)
+current_4gexp = pd.read_sql("SELECT * FROM current_4gexp", con=engine)
+
+# Ensure 'Audit Date' in both DataFrames is datetime
+min_4gexp['Audit Date'] = pd.to_datetime(min_4gexp['Audit Date'], errors='coerce')
+current_4gexp['Audit Date'] = pd.to_datetime(current_4gexp['Audit Date'], errors='coerce')
+
+# Ensure 'RNO Audit Date Again' in both DataFrames is datetime
+min_4gexp['RNO Audit Date Again'] = pd.to_datetime(min_4gexp['RNO Audit Date Again'], errors='coerce')
+current_4gexp['RNO Audit Date Again'] = pd.to_datetime(current_4gexp['RNO Audit Date Again'], errors='coerce')
+
+
+# Merge DataFrames based on 'SiteID-Band'
+merged_df = pd.merge(
+    min_4gexp,
+    current_4gexp[['SiteID-Band', 'Submit report date', 'Network optimization auditor', 'Audit Date','RNO Audit Status', 'Issues', 'Advice', 'Plan Rectification Date', 'RNO Audit Date Again', 'RNO Audit Status Again', 'SSV Current Status', 'Submit Portal Web', 'Acceptance result', 'Remarks' ]],
+    on='SiteID-Band',
+    how='left',
+    suffixes=('', '_current_4gexp')
+)
+
+# Update 'Network optimization auditor' in min_4gexp if it is null
+network_optimization_auditor_null_mask = pd.isnull(min_4gexp['Network optimization auditor'])
+min_4gexp.loc[network_optimization_auditor_null_mask, 'Network optimization auditor'] = merged_df.loc[network_optimization_auditor_null_mask, 'Network optimization auditor_current_4gexp']
+
+# Update 'Audit Date' in min_4gexp if it is null
+audit_date_null_mask = pd.isnull(min_4gexp['Audit Date'])
+min_4gexp.loc[audit_date_null_mask, 'Audit Date'] = merged_df.loc[audit_date_null_mask, 'Audit Date_current_4gexp']
+
+# Update 'RNO Audit Status' if it is null in min_4gexp
+rno_audit_status_null_mask = pd.isnull(min_4gexp['RNO Audit Status'])
+min_4gexp.loc[rno_audit_status_null_mask, 'RNO Audit Status'] = merged_df.loc[rno_audit_status_null_mask, 'RNO Audit Status_current_4gexp']
+
+# Update 'Issues' if it is null in min_4gexp
+issues_null_mask = pd.isnull(min_4gexp['Issues'])
+min_4gexp.loc[issues_null_mask, 'Issues'] = merged_df.loc[issues_null_mask, 'Issues_current_4gexp']
+
+# Update 'Advice' if it is null in min_4gexp
+advice_null_mask = pd.isnull(min_4gexp['Advice'])
+min_4gexp.loc[advice_null_mask, 'Advice'] = merged_df.loc[advice_null_mask, 'Advice_current_4gexp']
+
+# Update 'Plan Rectification Date' if it is null in min_4gexp
+plan_rectification_date_null_mask = pd.isnull(min_4gexp['Plan Rectification Date'])
+min_4gexp.loc[plan_rectification_date_null_mask, 'Plan Rectification Date'] = merged_df.loc[plan_rectification_date_null_mask, 'Plan Rectification Date_current_4gexp']
+
+# Update 'RNO Audit Date Again' if it is null in min_4gexp
+rno_audit_date_again_null_mask = pd.isnull(min_4gexp['RNO Audit Date Again'])
+min_4gexp.loc[rno_audit_date_again_null_mask, 'RNO Audit Date Again'] = merged_df.loc[rno_audit_date_again_null_mask, 'RNO Audit Date Again_current_4gexp']
+
+# Update 'RNO Audit Status Again' if it is null in min_4gexp
+rno_audit_status_again_null_mask = pd.isnull(min_4gexp['RNO Audit Status Again'])
+min_4gexp.loc[rno_audit_status_again_null_mask, 'RNO Audit Status Again'] = merged_df.loc[rno_audit_status_again_null_mask, 'RNO Audit Status Again_current_4gexp']
+
+# Update 'SSV Current Status' if it is null in min_4gexp
+ssv_current_4gexp_status_null_mask = pd.isnull(min_4gexp['SSV Current Status'])
+min_4gexp.loc[ssv_current_4gexp_status_null_mask, 'SSV Current Status'] = merged_df.loc[ssv_current_4gexp_status_null_mask, 'SSV Current Status_current_4gexp']
+
+# Update 'Submit Portal Web' if it is null in min_4gexp
+submit_portal_web_null_mask = pd.isnull(min_4gexp['Submit Portal Web'])
+min_4gexp.loc[submit_portal_web_null_mask, 'Submit Portal Web'] = merged_df.loc[submit_portal_web_null_mask, 'Submit Portal Web_current_4gexp']
+
+# Update 'Acceptance result' if it is null in min_4gexp
+acceptance_result_null_mask = pd.isnull(min_4gexp['Acceptance result'])
+min_4gexp.loc[acceptance_result_null_mask, 'Acceptance result'] = merged_df.loc[acceptance_result_null_mask, 'Acceptance result_current_4gexp']
+
+# Update 'Remarks' if it is null in min_4gexp
+remarks_null_mask = pd.isnull(min_4gexp['Remarks'])
+min_4gexp.loc[remarks_null_mask, 'Remarks'] = merged_df.loc[remarks_null_mask, 'Remarks_current_4gexp']
+
+
+# Columns to convert to dates (without time)
+date_columns = [
+    'Light-Up Date',
+    'Test date',
+    'Submit report date',
+    'Audit Date',
+    'Plan Rectification Date',
+    'RNO Audit Date Again'
+]
+
+# Convert each column to date (without time)
+for col in date_columns:
+    if col in min_4gexp.columns:
+        min_4gexp[col] = pd.to_datetime(min_4gexp[col], errors='coerce').dt.date
+
+
+# Update the MySQL table with the modified DataFrame
+min_4gexp.to_sql(name='min_4gexp', con=engine, if_exists='replace', index=False)
+
+# Export the DataFrame to an Excel file
+file_path = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Check\min_4gexp_export.xlsx'
+min_4gexp.to_excel(file_path, index=False)
+
+
+# Dispose of the engine
+engine.dispose()
+
+print("The min_4gexp table has been updated successfully.")
+
+### Convert Date and Export to excel file
+import pandas as pd
+from sqlalchemy import create_engine
+import os
+from openpyxl import load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+# Database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# Create SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Fetch min_4gexp table
+min_4gexp = pd.read_sql("SELECT * FROM min_4gexp", con=engine)
+
+# Close the connection
+engine.dispose()
+
+# Convert specified columns to dates without time
+date_columns = [
+    'Light-Up Date',
+    'Test Date Check',
+    'Submit report date',
+    'Audit Date',
+    'Plan Rectification Date',
+    'RNO Audit Date Again'
+]
+
+for col in date_columns:
+    if col in min_4gexp.columns:
+        min_4gexp[col] = pd.to_datetime(min_4gexp[col], errors='coerce').dt.date
+
+# Specify the directory for export
+export_directory = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Check'
+
+# Ensure the directory exists
+os.makedirs(export_directory, exist_ok=True)
+
+# Export DataFrame to Excel
+export_path = os.path.join(export_directory, 'min_4gexp_export.xlsx')
+min_4gexp.to_excel(export_path, index=False)
+
+# Load the DataFrame into the Checker 4Gexp v1.xlsx file in the 'Auto' sheet
+target_excel_path = os.path.join(export_directory, 'Checker 4Gexp v1.xlsx')
+workbook = load_workbook(target_excel_path)
+sheet = workbook['Auto']
+
+# Clear existing data in 'Auto' sheet, assuming headers are in the first row
+for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+    for cell in row:
+        cell.value = None
+
+# Populate the 'Auto' sheet with the DataFrame's data
+for r_idx, row in enumerate(dataframe_to_rows(min_4gexp, index=False, header=False), start=2):
+    for c_idx, value in enumerate(row, start=1):
+        sheet.cell(row=r_idx, column=c_idx, value=value)
+
+# Save and close the workbook
+workbook.save(target_excel_path)
+workbook.close()
+
+print(f"min_4gexp data has been loaded into {target_excel_path} on the 'Auto' sheet.")
+
+
