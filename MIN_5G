@@ -1,0 +1,532 @@
+import os
+import mysql.connector
+import pandas as pd
+from sqlalchemy import create_engine
+from mysql.connector import Error
+import warnings
+
+warnings.filterwarnings('ignore')
+# Database configuration
+db_config = {
+    'host': '127.0.0.1',
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'auth_plugin': 'mysql_native_password',
+    'database': 'ssvprogress',
+}
+
+def create_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        if connection.is_connected():
+            print("Connected to MySQL.")
+            return connection
+    except Error as e:
+        print(f"Error: {e}")
+        return None
+
+def truncate_table(connection, table_name):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+            result = cursor.fetchone()
+            if result:
+                truncate_query = f"TRUNCATE TABLE {table_name};"
+                cursor.execute(truncate_query)
+                connection.commit()
+                print(f"Table {table_name} truncated.")
+            else:
+                print(f"Table {table_name} does not exist.")
+    except Error as e:
+        print(f"An error occurred during table truncation: {e}")
+
+def import_data(connection, file_path, table_name):
+    try:
+        df = pd.read_excel(file_path, sheet_name='MIN_5G')
+
+        date_columns = [
+            'Light-Up Date', 'Test date', 'Submit report date',
+            'Audit Date', 'Plan Rectification Date', 'RNO Audit Date Again'
+        ]
+
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+
+        print("Date conversion complete.")
+
+        engine = create_engine(
+            f'mysql+mysqlconnector://{db_config["user"]}:{db_config["password"]}@{db_config["host"]}/{db_config["database"]}')
+
+        df.to_sql(table_name, con=engine, if_exists='replace', index=False, method='multi')
+
+        print(f"Data from {file_path} imported into the {table_name} table.")
+    except Exception as e:
+        print(f"An error occurred during data import: {e}")
+        raise
+
+def close_connection(connection):
+    if connection.is_connected():
+        connection.close()
+        print("Connection closed.")
+
+def table_exists(cursor, table_name):
+    cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+    return cursor.fetchone() is not None
+
+def merge_duplicate_data(connection):
+    try:
+        with connection.cursor() as cursor:
+            if table_exists(cursor, 'current') and table_exists(cursor, 'min_5g'):
+                cursor.execute('''
+                    INSERT INTO ssvprogress.min_5g
+                    SELECT c.*
+                    FROM ssvprogress.current c
+                    LEFT JOIN ssvprogress.min_5g p ON c.`Physical PlanSiteID` = p.`Physical PlanSiteID`
+                    WHERE p.`Physical PlanSiteID` IS NULL
+                ''')
+                connection.commit()
+                print("Merge duplicate data completed.")
+            else:
+                print("Tables 'current' or 'min_5g' do not exist.")
+    except Error as e:
+        print(f"An error occurred during data merge: {e}")
+
+if __name__ == "__main__":
+    connection = create_connection()
+    if connection:
+        try:
+            tables_to_truncate = ['current', 'previous', 'min_5g']
+            for table_name in tables_to_truncate:
+                truncate_table(connection, table_name)
+
+            excel_directory = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Raw\\'
+            files_to_import = [
+                ('Current.xlsx', 'current'),
+                ('Previous.xlsx', 'previous'),
+                ('Previous.xlsx', 'min_5g')
+            ]
+            for file_name, table_name in files_to_import:
+                file_path = os.path.join(excel_directory, file_name)
+                import_data(connection, file_path, table_name)
+
+            merge_duplicate_data(connection)
+
+        except Error as e:
+            print(f"An error occurred: {e}")
+        finally:
+            close_connection(connection)
+
+
+#### Commercial Launch
+
+
+import mysql.connector
+from mysql.connector import Error
+from sqlalchemy import create_engine
+import pandas as pd
+import warnings
+
+# Suppress pandas warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Replace these with your actual database credentials
+db_config = {
+    'host': '127.0.0.1',
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'auth_plugin': 'mysql_native_password',
+    'database': 'ssvprogress',
+}
+
+def create_connection():
+    try:
+        connection = mysql.connector.connect(**db_config)
+        if connection.is_connected():
+            print("Connected to MySQL.")
+            return connection
+    except Error as e:
+        print(f"Error: {e}")
+        return None
+
+def fetch_dataframe(connection, query):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            data = cursor.fetchall()
+            df = pd.DataFrame(data, columns=columns)
+            return df
+    except Error as e:
+        print(f"An error occurred while fetching data: {e}")
+        return pd.DataFrame()
+
+def update_commercial_launch(connection):
+    try:
+        min_5g_query = "SELECT * FROM min_5g;"
+        comm_cities_query = "SELECT * FROM comm_cities;"
+
+        min_5g_df = fetch_dataframe(connection, min_5g_query)
+        comm_cities_df = fetch_dataframe(connection, comm_cities_query)
+
+        if not min_5g_df.empty and not comm_cities_df.empty:
+            min_5g_df['Commercial Launch'] = min_5g_df['Cit Code'].isin(comm_cities_df['Mun_code']).map({True: 'YES', False: 'NO'})
+
+            with connection.cursor() as cursor:
+                for index, row in min_5g_df.iterrows():
+                    city_code = row['Cit Code']
+                    commercial_launch = row['Commercial Launch']
+                    cursor.execute(f"UPDATE min_5g SET `Commercial Launch` = '{commercial_launch}' WHERE `Cit Code` = '{city_code}';")
+
+            connection.commit()
+            print("Lookup and update completed.")
+        else:
+            print("Dataframes are empty. Lookup and update skipped.")
+
+    except Error as e:
+        print(f"An error occurred during lookup and update: {e}")
+
+def close_connection(connection):
+    if connection.is_connected():
+        connection.close()
+        print("Connection closed.")
+
+# Create a connection
+connection = create_connection()
+
+# Perform lookup and update
+if connection:
+    update_commercial_launch(connection)
+
+    # Close the connection
+    close_connection(connection)
+
+
+###### Tower Type
+from sqlalchemy import create_engine, text
+import pandas as pd
+
+# Database credentials and connection setup
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+engine = create_engine(
+    f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Use a transaction to truncate tables
+with engine.begin() as conn:
+    conn.execute(text("TRUNCATE TABLE db_4gmacro"))
+    conn.execute(text("TRUNCATE TABLE db_4gmicro"))
+
+# Load new data from the Excel files into DataFrames
+macro_excel_path = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Database\Database_4GMacro.xlsx'
+micro_excel_path = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Database\Database_4GMicro.xlsx'
+db_4gmacro_df = pd.read_excel(macro_excel_path)
+db_4gmicro_df = pd.read_excel(micro_excel_path)
+
+# Insert the data into the tables
+db_4gmacro_df.to_sql('db_4gmacro', con=engine, if_exists='append', index=False)
+db_4gmicro_df.to_sql('db_4gmicro', con=engine, if_exists='append', index=False)
+
+# Now perform your existing operations
+# Read the 'min_5g' table into a DataFrame
+min_5g_df = pd.read_sql_table('min_5g', con=engine)
+
+# Check if 'Physical PlanSiteID' exists in 'min_5g' DataFrame
+if 'Physical PlanSiteID' not in min_5g_df.columns:
+    print("Error: 'Physical PlanSiteID' column not found in 'min_5g' table.")
+else:
+    # Perform lookup and update in 'min_5g' DataFrame
+    for index, row in min_5g_df.iterrows():
+        physical_plan_site_id = row['Physical PlanSiteID']
+
+        if physical_plan_site_id in db_4gmacro_df['eNodeBName New'].values:
+            min_5g_df.at[index, 'Tower Type'] = 'MACRO'
+        elif physical_plan_site_id in db_4gmicro_df['eNodeBName New'].values:
+            min_5g_df.at[index, 'Tower Type'] = 'MICRO'
+        else:
+            min_5g_df.at[index, 'Tower Type'] = 'NotinDB'
+
+    # Update the 'min_5g' table in MySQL using SQLAlchemy
+    min_5g_df.to_sql('min_5g', con=engine, if_exists='replace', index=False)
+
+print("Update completed.")
+
+import pandas as pd
+from sqlalchemy import create_engine
+
+# Replace these with your actual database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Load min_5g and current tables into DataFrames
+min_5g = pd.read_sql("SELECT * FROM min_5g", con=engine)
+current = pd.read_sql("SELECT * FROM current", con=engine)
+
+# Convert 'Light-Up Date' in both DataFrames to datetime
+min_5g['Light-Up Date'] = pd.to_datetime(min_5g['Light-Up Date'], errors='coerce')
+current['Light-Up Date'] = pd.to_datetime(current['Light-Up Date'], errors='coerce')
+
+# Ensure 'Audit Date' in both DataFrames is datetime
+min_5g['Audit Date'] = pd.to_datetime(min_5g['Audit Date'], errors='coerce')
+current['Audit Date'] = pd.to_datetime(current['Audit Date'], errors='coerce')
+
+# Ensure 'RNO Audit Date Again' in both DataFrames is datetime
+min_5g['RNO Audit Date Again'] = pd.to_datetime(min_5g['RNO Audit Date Again'], errors='coerce')
+current['RNO Audit Date Again'] = pd.to_datetime(current['RNO Audit Date Again'], errors='coerce')
+
+# Merge DataFrames based on 'Physical PlanSiteID'
+merged_df = pd.merge(min_5g, current[['Physical PlanSiteID', 'Light-Up Date', 'Construction progress', 'Test date', 'Submit report date', 'Network optimization auditor', 'Audit Date','RNO Audit Status', 'Issues', 'Advice', 'Plan Rectification Date', 'RNO Audit Date Again', 'RNO Audit Status Again', 'SSV Current Status', 'Submit Portal Web', 'Acceptance result', 'Remarks']],
+                     on='Physical PlanSiteID', how='left', suffixes=('', '_current'))
+
+# Update 'Light-Up Date' if it is null in min_5g
+light_up_date_null_mask = pd.isnull(min_5g['Light-Up Date'])
+min_5g.loc[light_up_date_null_mask, 'Light-Up Date'] = merged_df.loc[light_up_date_null_mask, 'Light-Up Date_current']
+
+# Update 'Construction progress' based on 'Light-Up Date'
+# If 'Light-Up Date' is not null, set to 'Integrated', else set to 'For CW mobilization'
+min_5g['Construction progress'] = min_5g['Light-Up Date'].apply(lambda x: 'Integrated' if pd.notnull(x) else 'For CW mobilization')
+
+# Update 'Test date' in min_5g if it is null
+test_date_null_mask = pd.isnull(min_5g['Test date'])
+min_5g.loc[test_date_null_mask, 'Test date'] = merged_df.loc[test_date_null_mask, 'Test date_current']
+
+# Update 'Submit report date' in min_5g if it is null
+submit_report_date_null_mask = pd.isnull(min_5g['Submit report date'])
+min_5g.loc[submit_report_date_null_mask, 'Submit report date'] = merged_df.loc[submit_report_date_null_mask, 'Submit report date_current']
+
+# Update 'SSV progress' based on 'Construction progress', 'Test date', and 'Submit report date'
+is_integrated = min_5g['Construction progress'] == 'Integrated'
+test_date_not_null = pd.notnull(min_5g['Test date'])
+submit_report_date_not_null = pd.notnull(min_5g['Submit report date'])
+
+min_5g.loc[is_integrated & test_date_not_null & submit_report_date_not_null, 'SSV progress'] = 'Report submitted'
+min_5g.loc[is_integrated & test_date_not_null & ~submit_report_date_not_null, 'SSV progress'] = 'Test finished'
+min_5g.loc[is_integrated & ~test_date_not_null & ~submit_report_date_not_null, 'SSV progress'] = 'Ready for test'
+
+# Update 'Network optimization auditor' in min_5g if it is null
+network_optimization_auditor_null_mask = pd.isnull(min_5g['Network optimization auditor'])
+min_5g.loc[network_optimization_auditor_null_mask, 'Network optimization auditor'] = merged_df.loc[network_optimization_auditor_null_mask, 'Network optimization auditor_current']
+
+# Update 'Audit Date' in min_5g if it is null
+audit_date_null_mask = pd.isnull(min_5g['Audit Date'])
+min_5g.loc[audit_date_null_mask, 'Audit Date'] = merged_df.loc[audit_date_null_mask, 'Audit Date_current']
+
+# Update 'RNO Audit Status' if it is null in min_5g
+rno_audit_status_null_mask = pd.isnull(min_5g['RNO Audit Status'])
+min_5g.loc[rno_audit_status_null_mask, 'RNO Audit Status'] = merged_df.loc[rno_audit_status_null_mask, 'RNO Audit Status_current']
+
+# Update 'Issues' if it is null in min_5g
+issues_null_mask = pd.isnull(min_5g['Issues'])
+min_5g.loc[issues_null_mask, 'Issues'] = merged_df.loc[issues_null_mask, 'Issues_current']
+
+# Update 'Advice' if it is null in min_5g
+advice_null_mask = pd.isnull(min_5g['Advice'])
+min_5g.loc[advice_null_mask, 'Advice'] = merged_df.loc[advice_null_mask, 'Advice_current']
+
+# Update 'Plan Rectification Date' if it is null in min_5g
+plan_rectification_date_null_mask = pd.isnull(min_5g['Plan Rectification Date'])
+min_5g.loc[plan_rectification_date_null_mask, 'Plan Rectification Date'] = merged_df.loc[plan_rectification_date_null_mask, 'Plan Rectification Date_current']
+
+# Update 'RNO Audit Date Again' if it is null in min_5g
+rno_audit_date_again_null_mask = pd.isnull(min_5g['RNO Audit Date Again'])
+min_5g.loc[rno_audit_date_again_null_mask, 'RNO Audit Date Again'] = merged_df.loc[rno_audit_date_again_null_mask, 'RNO Audit Date Again_current']
+
+# Update 'RNO Audit Status Again' if it is null in min_5g
+rno_audit_status_again_null_mask = pd.isnull(min_5g['RNO Audit Status Again'])
+min_5g.loc[rno_audit_status_again_null_mask, 'RNO Audit Status Again'] = merged_df.loc[rno_audit_status_again_null_mask, 'RNO Audit Status Again_current']
+
+# Update 'SSV Current Status' if it is null in min_5g
+ssv_current_status_null_mask = pd.isnull(min_5g['SSV Current Status'])
+min_5g.loc[ssv_current_status_null_mask, 'SSV Current Status'] = merged_df.loc[ssv_current_status_null_mask, 'SSV Current Status_current']
+
+# Update 'Submit Portal Web' if it is null in min_5g
+submit_portal_web_null_mask = pd.isnull(min_5g['Submit Portal Web'])
+min_5g.loc[submit_portal_web_null_mask, 'Submit Portal Web'] = merged_df.loc[submit_portal_web_null_mask, 'Submit Portal Web_current']
+
+# Update 'Acceptance result' if it is null in min_5g
+acceptance_result_null_mask = pd.isnull(min_5g['Acceptance result'])
+min_5g.loc[acceptance_result_null_mask, 'Acceptance result'] = merged_df.loc[acceptance_result_null_mask, 'Acceptance result_current']
+
+# Update 'Remarks' if it is null in min_5g
+remarks_null_mask = pd.isnull(min_5g['Remarks'])
+min_5g.loc[remarks_null_mask, 'Remarks'] = merged_df.loc[remarks_null_mask, 'Remarks_current']
+
+# Update the MySQL table with the modified DataFrame
+min_5g.to_sql(name='min_5g', con=engine, if_exists='replace', index=False)
+
+# Drop rows where 'City' or 'City Code' is null
+min_5g.dropna(subset=['City', 'Cit Code'], inplace=True)
+
+# Function to determine Tower Type based on Physical PlanSiteID
+def determine_tower_type(row):
+    if row['Tower Type'] == 'NotinDB':
+        # Extract rightmost 5 characters of Physical PlanSiteID
+        truncated_value = row['Physical PlanSiteID'][-5:]
+        # Check if truncated value is less than 2000
+        if int(truncated_value) < 2000:
+            return 'MACRO'
+    return row['Tower Type']
+
+# Apply the function to the 'Tower Type' column
+min_5g['Tower Type'] = min_5g.apply(determine_tower_type, axis=1)
+
+# Update the MySQL table with the modified DataFrame
+min_5g.to_sql(name='min_5g', con=engine, if_exists='replace', index=False)
+
+# Dispose the engine
+engine.dispose()
+
+### TAB/CSV Files Uploaded
+
+import pandas as pd
+from sqlalchemy import create_engine
+
+# Database configuration
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# Database URL
+db_url = f"mysql+pymysql://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}"
+
+# Create an engine
+engine = create_engine(db_url)
+
+# Connect to the database and read the table into a pandas DataFrame
+with engine.connect() as conn, conn.begin():
+    df = pd.read_sql_table('min_5g', con=conn)
+
+# Filter rows where SSV Current Status is 'Approved' and TAB File or CSV file upload to FTP is not 'YES'
+condition = (df['SSV Current Status'] == 'Approved') & (df['TAB File or CSV file upload to FTP'] != 'YES')
+df.loc[condition, 'TAB File or CSV file upload to FTP'] = 'YES'
+
+# Write the updated DataFrame back to the database
+# Note that this step will replace the entire table content, so use with caution.
+# Ensure to backup your database before proceeding with this operation.
+with engine.begin() as conn:
+    df.to_sql('min_5g', con=conn, if_exists='replace', index=False)
+
+print("Database update complete.")
+
+#CleanUp: SSV Current Status (from Rectify > Approve)
+
+from sqlalchemy import create_engine, text
+
+# Suppress all warnings
+import warnings
+warnings.filterwarnings('ignore')
+
+# Database configuration
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine for MySQL connection
+engine = create_engine(
+    f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Update query for 'SSV Current Status'
+update_ssv_current_status_query = text("""
+UPDATE min_5g
+SET `SSV Current Status` = 'Approved'
+WHERE `RNO Audit Status` = 'Rectify'
+AND `RNO Audit Status Again` = 'Approved';
+""")
+
+# Execute the update query within a transaction
+with engine.begin() as connection:  # automatically commits or rolls back the transaction
+    result = connection.execute(update_ssv_current_status_query)
+    print(f"{result.rowcount} rows were updated to 'Approved' in SSV Current Status.")
+
+
+
+#### Date conversion and export table:
+import os
+import pandas as pd
+from sqlalchemy import create_engine
+from openpyxl import load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+# Replace these with your actual database credentials
+db_config = {
+    'user': 'root',
+    'password': 'Davaodito2020',
+    'host': '127.0.0.1',
+    'database': 'ssvprogress',
+}
+
+# SQLAlchemy engine
+engine = create_engine(f"mysql+mysqlconnector://{db_config['user']}:{db_config['password']}@{db_config['host']}/{db_config['database']}")
+
+# Load min_5g table into DataFrame
+min_5g = pd.read_sql("SELECT * FROM min_5g", con=engine)
+
+# Columns to convert to dates (without time)
+date_columns = [
+    'Light-Up Date',
+    'Test date',
+    'Submit report date',
+    'Audit Date',
+    'Plan Rectification Date',
+    'RNO Audit Date Again'
+]
+
+# Convert each column to date (without time)
+for col in date_columns:
+    if col in min_5g.columns:
+        min_5g[col] = pd.to_datetime(min_5g[col], errors='coerce').dt.date
+
+# Dispose the engine
+engine.dispose()
+
+# Specify the directory where you want to save the Excel file
+export_directory = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Check'
+
+# Create the directory if it doesn't exist
+os.makedirs(export_directory, exist_ok=True)
+
+# Set the Excel file path
+excel_file_path = os.path.join(export_directory, 'min_5g_export.xlsx')
+
+# Export DataFrame to Excel
+min_5g.to_excel(excel_file_path, index=False)
+
+# Path to the target Excel file
+target_excel_file_path = r'C:\#RF Files 2023\##Python Files\Projects\SSVProgress\#Check\Checker 5G v1.xlsx'
+
+# Load the target workbook and the 'Auto' sheet
+target_workbook = load_workbook(target_excel_file_path)
+target_sheet = target_workbook['Auto']
+
+# Clear the contents of 'Auto' sheet entirely
+if target_sheet.max_row > 1:  # Check if there are rows to delete
+    target_sheet.delete_rows(1, target_sheet.max_row)
+
+# Write data into 'Auto' sheet starting from A1
+for r_idx, row in enumerate(dataframe_to_rows(min_5g, index=False, header=True), start=1):
+    for c_idx, value in enumerate(row, start=1):
+        target_sheet.cell(row=r_idx, column=c_idx, value=value)
+
+# Save and close the target workbook
+target_workbook.save(target_excel_file_path)
+target_workbook.close()
+
+print(f"min_5g table data copied to {target_excel_file_path} in the 'Auto' sheet.")
+
